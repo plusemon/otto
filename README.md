@@ -75,6 +75,12 @@ Each session:
 
 ## Development
 
+Install development dependencies:
+
+```bash
+pip install -e ".[dev]"
+```
+
 Run tests:
 
 ```bash
@@ -84,7 +90,7 @@ pytest
 Run linting:
 
 ```bash
-ruff check .
+ruff check src tests
 ```
 
 ## Status
