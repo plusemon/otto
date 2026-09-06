@@ -99,3 +99,7 @@ This is an MVP (Minimum Viable Product). Out of scope:
 
 - `.otto/STEP0_REPORT.md` — SDK introspection report detailing config design decisions
 - [Kilo documentation](https://kilo.ai/docs) — Gateway and agent API reference
+
+## License
+
+[MIT](./LICENSE)
