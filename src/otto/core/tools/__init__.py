@@ -9,9 +9,17 @@ Policy gating is handled by the same policy system used for built-in tools
 (policies match on tool name strings).  No special registration needed.
 """
 
-from .tests import run_tests
+from .git import (
+    git_branch,
+    git_commit,
+    git_diff,
+    git_log,
+    git_push,
+    git_status,
+    open_pull_request,
+)
 from .lint import run_linter
-from .git import git_diff, git_status, git_log, git_branch, git_commit, git_push, open_pull_request
+from .tests import run_tests
 
 ALL_TOOLS = [
     run_tests,

@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 from otto.core.settings import (
-    ProjectConfig,
     _detect_lint_command,
     _detect_test_command,
     load_project_config,

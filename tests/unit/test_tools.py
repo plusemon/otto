@@ -5,17 +5,17 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from otto.core.tools import ALL_TOOLS
-from otto.core.tools.tests import run_tests
-from otto.core.tools.lint import run_linter
 from otto.core.tools.git import (
-    git_diff,
-    git_status,
-    git_log,
     git_branch,
     git_commit,
+    git_diff,
+    git_log,
     git_push,
+    git_status,
     open_pull_request,
 )
+from otto.core.tools.lint import run_linter
+from otto.core.tools.tests import run_tests
 
 
 class TestALLTools:
@@ -58,7 +58,7 @@ class TestRunTests:
     @patch("otto.core.tools.tests._run_command")
     def test_with_scope(self, mock_run) -> None:
         mock_run.return_value = (0, "1 passed", "")
-        result = run_tests(scope="tests/test_foo.py")
+        run_tests(scope="tests/test_foo.py")
         # Should include the scope in the command
         call_args = mock_run.call_args[0][0]
         assert "tests/test_foo.py" in call_args

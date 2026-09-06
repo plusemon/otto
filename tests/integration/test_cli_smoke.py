@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 class TestCLISmoke:
     """Verify the CLI module can be imported and App instantiated."""
@@ -58,12 +56,7 @@ class TestCLISmoke:
 
     def test_core_modules_importable(self) -> None:
         """All core modules can be imported."""
-        from otto.core import agent_config
-        from otto.core import session
-        from otto.core import session_index
-        from otto.core import policy
-        from otto.core import settings
-        from otto.core.tools import run_tests, run_linter, git_diff
+        from otto.core.tools import git_diff, run_linter, run_tests
 
         assert callable(run_tests)
         assert callable(run_linter)

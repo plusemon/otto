@@ -28,7 +28,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import Optional
+from typing import ClassVar
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -53,8 +53,8 @@ from ..core.session import (
     Session,
     SessionManager,
     SessionMode,
-    StreamEvent,
     SessionNotFoundForResume,
+    StreamEvent,
 )
 
 logger = logging.getLogger("otto.ui")
@@ -128,7 +128,7 @@ def _compute_edit_diff(args_json: str) -> Text | None:
 
     result = Text()
     for line in diff_lines:
-        if line.startswith("+++") or line.startswith("---"):
+        if line.startswith(("+++", "---")):
             result.append(line + "\n", style="bold")
         elif line.startswith("@@"):
             result.append(line + "\n", style="cyan")
@@ -373,7 +373,7 @@ class ToolCard(Vertical):
         )
 
     def _title_text(self) -> str:
-        icon = {"running": "\u23f3", "done": "\u2705", "failed": "\u274c"}.get(
+        {"running": "\u23f3", "done": "\u2705", "failed": "\u274c"}.get(
             self._status, "\u23f3"
         )
         badge = self._status.upper()
@@ -645,10 +645,7 @@ class ConfirmScreen(ModalScreen[bool]):
         if event.key == "y":
             event.prevent_default()
             self.dismiss(True)
-        elif event.key == "n":
-            event.prevent_default()
-            self.dismiss(False)
-        elif event.key == "escape":
+        elif event.key == "n" or event.key == "escape":
             event.prevent_default()
             self.dismiss(False)
 
@@ -791,7 +788,7 @@ class OttoUI(App):
     }
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("ctrl+b", "toggle_sidebar", "Toggle Sidebar", show=True),
         Binding("ctrl+c", "quit", "Quit", show=True),
     ]
@@ -1257,15 +1254,14 @@ class OttoUI(App):
                         self.output.end_assistant()
                         self.output.write_error(ev.error)
                         return
-                except Exception as handler_err:  # noqa: BLE001
+                except Exception as handler_err:
                     # A bug in a single event handler must not corrupt
                     # the rest of the turn. Log, surface to the user,
                     # and continue draining so the session can finish.
                     logger.exception(
-                        "Error handling %s event in session %s: %s",
+                        "Error handling %s event in session %s",
                         ev.kind,
                         sess.id,
-                        handler_err,
                     )
                     self.output.write_error(
                         f"internal error handling {ev.kind} event: "
@@ -1280,7 +1276,7 @@ class OttoUI(App):
             self._busy = False
             try:
                 self.mgr.update_activity(sess.id)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("Failed to update activity for %s", sess.id)
             self._refresh_status()
             self._refresh_sidebar()
@@ -1329,7 +1325,7 @@ class OttoUI(App):
         # the terminal abruptly.
         try:
             self.mgr.flush_index()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Failed to flush session index on unmount")
 
     async def _shutdown_and_exit(self) -> None:
@@ -1340,7 +1336,7 @@ class OttoUI(App):
         """
         try:
             await self.mgr.aclose()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Failed to close session manager on /quit")
         self.exit()
 
@@ -1367,7 +1363,7 @@ class ChatTimeline(VerticalScroll):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self._live_agent: Optional[AgentMessage] = None
+        self._live_agent: AgentMessage | None = None
         # FIFO of ToolCard widgets awaiting a `tool_result` event. This
         # supports providers that may issue multiple tool calls before
         # returning their results, instead of overwriting a single slot.

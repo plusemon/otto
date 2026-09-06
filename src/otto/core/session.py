@@ -32,14 +32,22 @@ import pathlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from google import antigravity
 from google.antigravity.types import (
     SessionContinuationMode,
-    Thought as _Thought,
+)
+from google.antigravity.types import (
     Text as _Text,
+)
+from google.antigravity.types import (
+    Thought as _Thought,
+)
+from google.antigravity.types import (
     ToolCall as _ToolCall,
+)
+from google.antigravity.types import (
     ToolResult as _ToolResult,
 )
 
@@ -107,7 +115,7 @@ class _AgentHandle:
         self._agent = agent
 
     @classmethod
-    async def start(cls, config: antigravity.LocalOpenAIAgentConfig) -> "_AgentHandle":
+    async def start(cls, config: antigravity.LocalOpenAIAgentConfig) -> _AgentHandle:
         try:
             agent = antigravity.Agent(config)
             await agent.__aenter__()
@@ -160,7 +168,7 @@ class Session:
         self.messages: list[Message] = []
         self.input_queue: asyncio.Queue[str] = asyncio.Queue()
         self.event_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
-        self._consumer: Optional[asyncio.Task[None]] = None
+        self._consumer: asyncio.Task[None] | None = None
         self.last_activity: datetime = created_at
         # Confirmation primitives for ask_user policy flow
         self.confirmation_request = confirmation_request
@@ -197,8 +205,8 @@ class Session:
             self._consumer.cancel()
             try:
                 await self._consumer
-            except BaseException:  # noqa: BLE001
-                pass
+            except asyncio.CancelledError:
+                logger.debug("Consumer cancelled for session %s", self.id)
         self._consumer = None
         logger.debug("Consumer stopped for session %s", self.id)
 
@@ -369,14 +377,14 @@ def _build_session_config(
         )
         policies = build_policies(ask_handler=ask_handler)
 
-    kwargs: dict[str, Any] = dict(
-        model=base_config.model,
-        base_url=base_config.base_url,
-        capabilities=base_config.capabilities,
-        policies=policies,
-        env={"KILO_API_KEY": base_config.env.get("KILO_API_KEY", "")},
-        save_dir=save_dir,
-    )
+    kwargs: dict[str, Any] = {
+        "model": base_config.model,
+        "base_url": base_config.base_url,
+        "capabilities": base_config.capabilities,
+        "policies": policies,
+        "env": {"KILO_API_KEY": base_config.env.get("KILO_API_KEY", "")},
+        "save_dir": save_dir,
+    }
     if conversation_id is not None:
         kwargs["conversation_id"] = conversation_id
         kwargs["session_continuation_mode"] = SessionContinuationMode.RESUME
@@ -403,7 +411,7 @@ class SessionManager:
         self._base_config = provider.build_provider_config()
         self._sessions: dict[str, Session] = {}
         self._order: list[str] = []
-        self._active_id: Optional[str] = None
+        self._active_id: str | None = None
         self._index = SessionIndex()
         self._index.load()
 
@@ -423,11 +431,11 @@ class SessionManager:
     def list_sessions(self) -> list[Session]:
         return [self._sessions[i] for i in self._order]
 
-    def get(self, session_id: str) -> Optional[Session]:
+    def get(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)
 
     @property
-    def active(self) -> Optional[Session]:
+    def active(self) -> Session | None:
         if self._active_id is None:
             return None
         return self._sessions.get(self._active_id)

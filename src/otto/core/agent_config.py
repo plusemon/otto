@@ -36,7 +36,7 @@ class ProviderSettings:
     model: str
     api_key: str
 
-    def masked(self) -> "ProviderSettings":
+    def masked(self) -> ProviderSettings:
         return ProviderSettings(self.base_url, self.model, _MASK)
 
 
@@ -131,7 +131,7 @@ def fetch_models() -> list[ModelInfo]:
             for m in r.json().get("data", [])
         ]
         return sorted(models, key=lambda m: (not m.is_free, m.name.lower()))
-    except Exception as e:
+    except (httpx.RequestError, ValueError) as e:
         logger.warning("Failed to fetch models: %s", e)
         return []
 

@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import pathlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger("otto.config")
 
@@ -115,7 +115,7 @@ def load_project_config() -> ProjectConfig:
             raw = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
             overrides = {k: v for k, v in raw.items() if isinstance(v, str)}
             logger.debug("Loaded config overrides from %s", _CONFIG_FILE)
-        except Exception as e:
+        except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to read %s: %s", _CONFIG_FILE, e)
 
     test_cmd = overrides.get("test_command", _detect_test_command())
@@ -152,6 +152,7 @@ def _run_command(cmd: str, timeout: int = 120) -> tuple[int, str, str]:
         result = subprocess.run(
             cmd,
             shell=True,
+            check=False,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -161,7 +162,7 @@ def _run_command(cmd: str, timeout: int = 120) -> tuple[int, str, str]:
         return result.returncode, result.stdout, result.stderr
     except subprocess.TimeoutExpired:
         return 124, "", f"Command timed out after {timeout}s"
-    except Exception as e:
+    except (subprocess.SubprocessError, OSError) as e:
         return 1, "", f"Failed to run command: {e}"
 
 

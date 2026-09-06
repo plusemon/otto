@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock
 
-from google.antigravity import policy as gp, types
+from google.antigravity import policy as gp
+from google.antigravity import types
 
-from otto.core.policy import build_policies, build_plan_policies, make_ask_handler
-
+from otto.core.policy import build_plan_policies, build_policies, make_ask_handler
 
 # ---------------------------------------------------------------------------
 # Helpers

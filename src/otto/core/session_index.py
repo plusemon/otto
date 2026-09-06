@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import pathlib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 
 logger = logging.getLogger("otto.session_index")
 
@@ -43,7 +41,7 @@ class SessionEntry:
         last_active: datetime,
         mode: str,
         conversation_ids: list[str] | None = None,
-    ) -> "SessionEntry":
+    ) -> SessionEntry:
         return SessionEntry(
             id=session_id,
             created_at=created_at.isoformat(),
@@ -74,7 +72,7 @@ class SessionIndex:
             for sid, entry_dict in raw.get("sessions", {}).items():
                 self._sessions[sid] = SessionEntry(**entry_dict)
             logger.debug("Loaded %d sessions from index", len(self._sessions))
-        except Exception as e:
+        except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to load session index, starting fresh: %s", e)
         self._loaded = True
 
@@ -92,7 +90,7 @@ class SessionIndex:
             tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
             tmp_path.replace(self._path)
             logger.debug("Session index saved (%d entries)", len(self._sessions))
-        except Exception as e:
+        except (OSError, json.JSONDecodeError) as e:
             logger.error("Failed to save session index: %s", e)
 
     def add(
@@ -132,9 +130,8 @@ class SessionIndex:
             entry.last_active = last_active.isoformat()
         if mode is not None:
             entry.mode = mode
-        if add_conversation_id is not None:
-            if add_conversation_id not in entry.conversation_ids:
-                entry.conversation_ids.append(add_conversation_id)
+        if add_conversation_id is not None and add_conversation_id not in entry.conversation_ids:
+            entry.conversation_ids.append(add_conversation_id)
         self.save()
 
     def get(self, session_id: str) -> SessionEntry | None:
