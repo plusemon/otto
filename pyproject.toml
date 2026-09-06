@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "otto"
+version = "0.1.0"
+description = "Terminal-native coding agent MVP: Textual TUI over the Kilo OpenAI-compatible gateway via google-antigravity."
+requires-python = ">=3.10"
+dependencies = [
+    "google-antigravity",
+    "textual",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+otto = "otto.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
