@@ -162,6 +162,42 @@ class TestSessionIndex:
         data = json.loads(raw)
         assert "sessions" in data
 
+    def test_update_name(self, tmp_path: Path) -> None:
+        """Updating name persists the change."""
+        idx = self._make_index(tmp_path)
+        now = datetime.now(timezone.utc)
+        idx.add("abc123", now, "build")
+
+        idx.update("abc123", name="fix login bug")
+        entry = idx.get("abc123")
+        assert entry is not None
+        assert entry.name == "fix login bug"
+
+    def test_name_persists_across_reload(self, tmp_path: Path) -> None:
+        """Name survives save/load cycle."""
+        idx1 = self._make_index(tmp_path)
+        now = datetime.now(timezone.utc)
+        idx1.add("abc123", now, "build")
+        idx1.update("abc123", name="explore auth")
+
+        idx2 = SessionIndex()
+        idx2._path = tmp_path / "sessions" / "index.json"
+        idx2.load()
+
+        entry = idx2.get("abc123")
+        assert entry is not None
+        assert entry.name == "explore auth"
+
+    def test_name_default_is_empty(self, tmp_path: Path) -> None:
+        """Name defaults to empty string."""
+        idx = self._make_index(tmp_path)
+        now = datetime.now(timezone.utc)
+        idx.add("abc123", now, "build")
+
+        entry = idx.get("abc123")
+        assert entry is not None
+        assert entry.name == ""
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------

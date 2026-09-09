@@ -27,7 +27,8 @@ import difflib
 import json
 import logging
 import re
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from typing import ClassVar
 
 from rich.text import Text
@@ -71,13 +72,17 @@ COMMANDS = [
     ("/session switch <id>", "Switch to a session by ID prefix"),
     ("/session resume <id>", "Resume a session from disk"),
     ("/model <name>", "Switch model for new sessions"),
+    ("/name <id> <name>", "Name a session for easier identification"),
+    ("/export [path]", "Export session transcript to Markdown"),
     ("/quit", "Exit otto"),
 ]
 
 _USER_RE = re.compile(r"^/session(?:\s+(.*))?$", re.IGNORECASE)
 _MODEL_RE = re.compile(r"^/model(?:\s+(.*))?$", re.IGNORECASE)
+_NAME_RE = re.compile(r"^/name\s+(\S+)\s+(.+)$", re.IGNORECASE)
 _PLAN_RE = re.compile(r"^/plan$", re.IGNORECASE)
 _BUILD_RE = re.compile(r"^/build$", re.IGNORECASE)
+_EXPORT_RE = re.compile(r"^/export(?:\s+(.*))?$", re.IGNORECASE)
 _QUIT_CMDS = {"/quit", ":q"}
 
 # ---------------------------------------------------------------------------
@@ -193,7 +198,7 @@ def _make_tool_summary(name: str, args_json: str) -> str:
 
 
 class UserMessage(Vertical):
-    """Card containing a user message with badge and styled border."""
+    """Card containing a user message with badge, styled border, and timestamp."""
 
     CSS = """
     UserMessage {
@@ -219,22 +224,32 @@ class UserMessage(Vertical):
         height: auto;
         width: 100%;
     }
+    UserMessage .msg-timestamp {
+        color: #6e7681;
+        height: 1;
+    }
     """
 
     def __init__(self, text: str, **kwargs) -> None:
         self._text = text
+        self._ts = datetime.now(tz=timezone.utc)
         super().__init__(**kwargs)
 
     def compose(self) -> ComposeResult:
-        yield Label("\U0001f464 You", classes="msg-badge user-badge")
+        ts_str = _format_ts(self._ts)
+        yield Static(
+            Text(f"\U0001f464 You  {ts_str}", style="bold #58a6ff"),
+            classes="msg-badge user-badge",
+            markup=False,
+        )
         yield Static(self._text, classes="msg-text", markup=False)
 
 
 class AgentMessage(Vertical):
     """Card containing an agent response with badge, styled border, and Markdown body.
 
-    During streaming the body is a plain Static. On completion it is swapped
-    to a Markdown widget for syntax-highlighted rendering.
+    During streaming the body is a plain Static with a blinking cursor indicator.
+    On completion it is swapped to a Markdown widget for syntax-highlighted rendering.
     """
 
     CSS = """
@@ -270,15 +285,21 @@ class AgentMessage(Vertical):
 
     def __init__(self, markdown_text: str = "", **kwargs) -> None:
         self._text = markdown_text
+        self._ts = datetime.now(tz=timezone.utc)
         super().__init__(**kwargs)
 
     def compose(self) -> ComposeResult:
-        yield Label("\U0001f916 Otto", classes="msg-badge agent-badge")
+        ts_str = _format_ts(self._ts)
+        yield Static(
+            Text(f"\U0001f916 Otto  {ts_str}", style="bold #3fb950"),
+            classes="msg-badge agent-badge",
+            markup=False,
+        )
         if self._text:
             yield Markdown(self._text, classes="msg-body")
         else:
             yield Static(
-                Text("\u2026", style="dim italic #3fb950"),
+                Text("\u258c", style="streaming-cursor"),
                 classes="msg-body",
                 markup=False,
             )
@@ -286,9 +307,8 @@ class AgentMessage(Vertical):
     def append_delta(self, delta: str) -> None:
         """Append a streaming text delta to the live body.
 
-        Shows a dim italic ellipsis only while we have no text yet (typing
-        indicator). Once the first token arrives, subsequent deltas render
-        plain so the user does not see a misleading leading truncation mark.
+        Shows a blinking cursor while waiting for the first token.
+        Once text arrives, renders plain text until finalize() swaps to Markdown.
         """
         self._text += delta
         body = self.query_one(".msg-body")
@@ -296,7 +316,7 @@ class AgentMessage(Vertical):
             if self._text:
                 body.update(Text(self._text))
             else:
-                body.update(Text("\u2026", style="dim italic #3fb950"))
+                body.update(Text("\u258c", style="streaming-cursor"))
 
     def finalize(self) -> None:
         """Swap the streaming Static body for a rendered Markdown widget."""
@@ -307,7 +327,7 @@ class AgentMessage(Vertical):
 
 
 class SystemMessage(Static):
-    """Compact muted info pill for system/status messages."""
+    """Compact muted info pill for system/status messages with timestamp."""
 
     CSS = """
     SystemMessage {
@@ -320,7 +340,10 @@ class SystemMessage(Static):
     """
 
     def __init__(self, text: str, **kwargs) -> None:
-        super().__init__(Text(f"  {text}", style="dim #8b949e"), markup=False, **kwargs)
+        ts_str = _format_ts(datetime.now(tz=timezone.utc))
+        super().__init__(
+            Text(f"  {ts_str}  {text}", style="dim #8b949e"), markup=False, **kwargs
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -329,9 +352,9 @@ class SystemMessage(Static):
 
 
 class ToolCard(Vertical):
-    """Collapsible tool call card with status badge and monospace output body.
+    """Collapsible tool call card with status badge, timing, and monospace output body.
 
-    Title shows: ⚙️ Tool: <name> [RUNNING] / [DONE] / [FAILED]
+    Title shows: ⚙️ Tool: <name> [RUNNING] / [DONE 0.3s] / [FAILED 1.2s]
     Body contains args and result inside a monospace Markdown code fence.
     """
 
@@ -358,6 +381,8 @@ class ToolCard(Vertical):
         self._summary = summary
         self._args_json = args_json
         self._status = "running"
+        self._start_time = time.monotonic()
+        self._end_time: float | None = None
         super().__init__(id=f"tool-card-{name}-{id(self)}")
 
     def compose(self) -> ComposeResult:
@@ -373,14 +398,27 @@ class ToolCard(Vertical):
         )
 
     def _title_text(self) -> str:
-        {"running": "\u23f3", "done": "\u2705", "failed": "\u274c"}.get(
+        emoji = {"running": "\u23f3", "done": "\u2705", "failed": "\u274c"}.get(
             self._status, "\u23f3"
         )
         badge = self._status.upper()
-        return f"\u2699\ufe0f Tool: {self._summary}  [{badge}]"
+        if self._end_time is not None:
+            duration = self._end_time - self._start_time
+            if duration >= 1.0:
+                time_str = f" {duration:.1f}s"
+            else:
+                time_str = f" {duration * 1000:.0f}ms"
+        else:
+            elapsed = time.monotonic() - self._start_time
+            if elapsed >= 1.0:
+                time_str = f" {elapsed:.1f}s"
+            else:
+                time_str = ""
+        return f"{emoji} Tool: {self._summary}  [{badge}{time_str}]"
 
     def set_result(self, result_text: str) -> None:
         """Update the card with the tool's result and diff (for edits)."""
+        self._end_time = time.monotonic()
         content = Text()
         content.append(
             f"Args: {_truncate(self._args_json, 300)}\n",
@@ -402,11 +440,14 @@ class ToolCard(Vertical):
         self.query_one(Collapsible).title = self._title_text()
 
     def set_error(self, error_text: str) -> None:
-        """Mark the card as failed."""
+        """Mark the card as failed and auto-expand to show the error."""
+        self._end_time = time.monotonic()
         detail = self.query_one(Collapsible).query_one(Static)
         detail.update(Text(f"Error: {error_text}", style="bold #f85149"))
         self._status = "failed"
-        self.query_one(Collapsible).title = self._title_text()
+        collapsible = self.query_one(Collapsible)
+        collapsible.title = self._title_text()
+        collapsible.expanded = True
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +500,7 @@ class CommandSuggestions(Static):
 
 
 class SessionSidebar(Vertical):
-    """Sidebar listing all sessions (active + resumable on disk).
+    """Sidebar listing all sessions (active + resumable on disk) with search filter.
 
     Emits SessionSelected messages on selection for decoupled navigation.
     """
@@ -485,6 +526,19 @@ class SessionSidebar(Vertical):
         margin-bottom: 1;
         height: 1;
     }
+    #sidebar-filter {
+        height: 3;
+        margin-bottom: 1;
+    }
+    #sidebar-filter Input {
+        height: 3;
+        background: #0d1117;
+        border: solid #30363d;
+        color: #c9d1d9;
+    }
+    #sidebar-filter Input:focus {
+        border: solid #58a6ff;
+    }
     #session-list {
         height: 1fr;
     }
@@ -495,15 +549,28 @@ class SessionSidebar(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Label("SESSIONS", id="sidebar-title")
+        yield Input(placeholder="Filter sessions...", id="sidebar-filter")
         yield ListView(id="session-list")
 
     def on_mount(self) -> None:
         self._session_ids: list[tuple[str, bool]] = []
+        self._filter_text: str = ""
         self._refresh()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "sidebar-filter":
+            self._filter_text = event.value.strip().lower()
+            self._refresh()
 
     def refresh_sessions(self) -> None:
         """Rebuild the session list from SessionManager state."""
         self._refresh()
+
+    def _matches_filter(self, label_text: str) -> bool:
+        """Check if a session label matches the current filter text."""
+        if not self._filter_text:
+            return True
+        return self._filter_text in label_text.lower()
 
     def _refresh(self) -> None:
         if not self.is_mounted:
@@ -546,7 +613,14 @@ class SessionSidebar(Vertical):
             label.append(" ")
             mode_color = "#3fb950" if s.mode == SessionMode.BUILD else "#d29922"
             label.append(f"{s.mode.value.upper()}", style=f"bold {mode_color}")
+            if s.name:
+                label.append(f"  \"{s.name}\"", style="italic #c9d1d9")
             label.append(f"  {s.message_count()}m", style="dim #8b949e")
+
+            label_str = str(label.plain)
+            if not self._matches_filter(label_str):
+                continue
+
             item = ListItem(Static(label, markup=False))
             list_view.append(item)
             self._session_ids.append((s.id, False))
@@ -564,9 +638,16 @@ class SessionSidebar(Vertical):
                 label.append(f"   {d['id']} ", style="dim #8b949e")
                 mode_color = "#3fb950" if d["mode"] == "build" else "#d29922"
                 label.append(f"{d['mode'].upper()}", style=f"bold {mode_color}")
+                if d.get("name"):
+                    label.append(f"  \"{d['name']}\"", style="italic #c9d1d9")
                 label.append(
                     f"  {d['conversation_count']}c", style="dim #8b949e"
                 )
+
+                label_str = str(label.plain)
+                if not self._matches_filter(label_str):
+                    continue
+
                 item = ListItem(Static(label, markup=False))
                 list_view.append(item)
                 self._session_ids.append((d["id"], True))
@@ -721,6 +802,24 @@ class OttoUI(App):
         color: #c9d1d9;
     }
 
+    /* ── Scrollbar styling ── */
+    VerticalScroll VerticalScroll {
+        scrollbar-color: #58a6ff #21262d;
+        scrollbar-color-hover: #79c0ff #30363d;
+        scrollbar-color-active: #a5d6ff #388bfd;
+    }
+
+    /* ── Focus indicators ── */
+    ListView:focus {
+        border: solid #58a6ff;
+    }
+    Input:focus {
+        border: solid #79c0ff;
+    }
+    Button:focus {
+        outline: solid #58a6ff;
+    }
+
     /* ── Top status bar ── */
     #top-bar {
         dock: top;
@@ -755,6 +854,10 @@ class OttoUI(App):
         color: #8b949e;
         margin-bottom: 1;
     }
+    #sidebar-filter {
+        margin-bottom: 1;
+        height: 3;
+    }
     #session-list {
         height: 1fr;
     }
@@ -764,6 +867,34 @@ class OttoUI(App):
         padding: 1 2;
         height: 1fr;
         background: #0f141c;
+    }
+
+    /* ── Scroll buttons ── */
+    #scroll-buttons {
+        dock: right;
+        width: 3;
+        height: auto;
+        padding: 0;
+        margin: 0;
+    }
+    #scroll-buttons Button {
+        width: 3;
+        height: 1;
+        margin: 0 0 0 0;
+        background: #21262d;
+        border: solid #30363d;
+        color: #8b949e;
+        min-width: 3;
+    }
+    #scroll-buttons Button:hover {
+        background: #30363d;
+        color: #c9d1d9;
+    }
+
+    /* ── Streaming cursor ── */
+    .streaming-cursor {
+        color: #3fb950;
+        text-style: bold;
     }
 
     /* ── Bottom dock ── */
@@ -791,7 +922,13 @@ class OttoUI(App):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("ctrl+b", "toggle_sidebar", "Toggle Sidebar", show=True),
         Binding("ctrl+c", "quit", "Quit", show=True),
+        Binding("ctrl+left", "shrink_sidebar", "Shrink Sidebar", show=True),
+        Binding("ctrl+right", "grow_sidebar", "Grow Sidebar", show=True),
     ]
+
+    _MIN_SIDEBAR_WIDTH = 15
+    _MAX_SIDEBAR_WIDTH = 60
+    _SIDEBAR_STEP = 5
 
     def __init__(self, manager: SessionManager) -> None:
         super().__init__()
@@ -803,14 +940,19 @@ class OttoUI(App):
         self._busy = False
         self._cmd_matches: list[str] = []
         self._suggestion_index: int = -1
+        self._cmd_history: list[str] = []
+        self._history_index: int = -1
+        self._total_tokens_in: int = 0
+        self._total_tokens_out: int = 0
 
     def compose(self) -> ComposeResult:
         # ── Top status bar ──
         with Horizontal(id="top-bar"):
             yield Label("[ID: ---]", classes="pill pill-accent", id="top-id")
-            yield Label("[Model: ---]", classes="pill pill-muted", id="top-model")
             yield Label("[---]", classes="pill pill-success", id="top-mode")
             yield Label("[Msgs: 0]", classes="pill pill-muted", id="top-msgs")
+            yield Label("[Tokens: 0]", classes="pill pill-muted", id="top-tokens")
+            yield Label("[Model: ---]", classes="pill pill-muted", id="top-model")
 
         # ── Main body: sidebar + chat timeline ──
         with Horizontal(id="main-body"):
@@ -823,7 +965,7 @@ class OttoUI(App):
         with Vertical(id="dock-container"):
             yield CommandSuggestions()
             yield Input(
-                placeholder="Type a message, or / for commands...",
+                placeholder="Type a message or / for commands \u00b7 Ctrl+B sidebar \u00b7 Ctrl+C quit",
                 id="prompt-input",
             )
 
@@ -854,32 +996,47 @@ class OttoUI(App):
         model_label = self.query_one("#top-model", Label)
         mode_label = self.query_one("#top-mode", Label)
         msgs_label = self.query_one("#top-msgs", Label)
+        tokens_label = self.query_one("#top-tokens", Label)
 
         if active is None:
             id_label.update("[ID: ---]")
             model_label.update("[Model: ---]")
             mode_label.update("[---]")
             msgs_label.update("[Msgs: 0]")
+            tokens_label.update("[Tokens: 0]")
             return
 
-        id_label.update(f"[ID: {active.id}]")
+        id_display = active.id
+        if active.name:
+            id_display = f"{active.id} \"{active.name}\""
+        id_label.update(f"[ID: {id_display}]")
         model_label.update(f"[Model: {self.mgr.model}]")
         mode_color = "#3fb950" if active.mode == SessionMode.BUILD else "#d29922"
         mode_label.update(f"[{active.mode.value.upper()}]")
         mode_label.styles.color = mode_color
         msgs_label.update(f"[Msgs: {active.message_count()}]")
 
+        if self._total_tokens_in or self._total_tokens_out:
+            tokens_label.update(
+                f"[Tokens: {self._total_tokens_in} in / {self._total_tokens_out} out]"
+            )
+        else:
+            tokens_label.update("[Tokens: 0]")
+
     def _refresh_sidebar(self) -> None:
         if hasattr(self, "sidebar") and self.sidebar is not None:
             self.sidebar.refresh_sessions()
 
-    def _reset_for_new_active_session(self, banner: str) -> None:
+    def _reset_for_new_active_session(
+        self, banner: str, replay_messages: list | None = None
+    ) -> None:
         """Reset the chat timeline when the active session changes.
 
         Finalizes any in-progress streaming agent card (so its body is
         rendered as Markdown), clears the timeline, and writes a banner
-        so the user can see the new session is loaded. Then re-enables
-        sticky-bottom scrolling for the fresh viewport.
+        so the user can see the new session is loaded. If replay_messages
+        is provided, renders the persisted history after the banner.
+        Then re-enables sticky-bottom scrolling for the fresh viewport.
         """
         if self._busy:
             # An in-flight turn is being abandoned; mark its UI state as
@@ -889,10 +1046,13 @@ class OttoUI(App):
             self.output.end_assistant()
             self.output.clear_timeline()
             self.output.write_system(banner)
+            if replay_messages:
+                self.output.replay_history(replay_messages)
             # A new viewport is being shown — assume the user wants to
             # see the bottom of the freshly cleared timeline.
             self.output.reset_sticky_bottom()
             self.output.scroll_end(animate=False)
+        self._refocus_input()
 
     # ------------------------------------------------------------------
     # Sidebar message handling
@@ -927,6 +1087,39 @@ class OttoUI(App):
         sidebar = self.query_one("#sidebar")
         sidebar.display = not sidebar.display
 
+    def action_shrink_sidebar(self) -> None:
+        """Shrink sidebar width with Ctrl+Left."""
+        sidebar = self.query_one("#sidebar")
+        if sidebar.display:
+            current = sidebar.styles.width
+            if current is not None:
+                new_w = max(self._MIN_SIDEBAR_WIDTH, int(current.value) - self._SIDEBAR_STEP)
+                sidebar.styles.width = new_w
+
+    def action_grow_sidebar(self) -> None:
+        """Grow sidebar width with Ctrl+Right."""
+        sidebar = self.query_one("#sidebar")
+        if sidebar.display:
+            current = sidebar.styles.width
+            if current is not None:
+                new_w = min(self._MAX_SIDEBAR_WIDTH, int(current.value) + self._SIDEBAR_STEP)
+                sidebar.styles.width = new_w
+
+    def action_scroll_to_bottom(self) -> None:
+        """Scroll the chat timeline to the bottom."""
+        self.output.scroll_end(animate=False)
+        self.output.reset_sticky_bottom()
+
+    def action_scroll_to_top(self) -> None:
+        """Scroll the chat timeline to the top."""
+        self.output.scroll_home(animate=False)
+        self.output._sticky_bottom = False
+
+    def _refocus_input(self) -> None:
+        """Re-focus the input bar after any action."""
+        if hasattr(self, "input_bar") and self.input_bar is not None:
+            self.input_bar.focus()
+
     # ------------------------------------------------------------------
     # Dynamic autocomplete for slash commands
     # ------------------------------------------------------------------
@@ -960,27 +1153,59 @@ class OttoUI(App):
     # ------------------------------------------------------------------
 
     def on_key(self, event) -> None:
-        if not self._cmd_matches:
-            return
-        if event.key == "down":
-            self._suggestion_index = min(
-                self._suggestion_index + 1, len(self._cmd_matches) - 1
-            )
-            self.cmd_suggestions.update_matches(
-                self._cmd_matches, self._suggestion_index
-            )
-        elif event.key == "up":
-            self._suggestion_index = max(self._suggestion_index - 1, -1)
-            self.cmd_suggestions.update_matches(
-                self._cmd_matches, self._suggestion_index
-            )
-        elif event.key == "enter" and self._suggestion_index >= 0:
+        # Tab completion for commands
+        if event.key == "tab" and self._cmd_matches:
             event.prevent_default()
-            self._accept_suggestion()
-        elif event.key == "escape":
-            self._cmd_matches = []
-            self._suggestion_index = -1
-            self.cmd_suggestions.hide()
+            if self._suggestion_index < len(self._cmd_matches) - 1:
+                self._suggestion_index += 1
+            else:
+                self._suggestion_index = 0
+            self.cmd_suggestions.update_matches(
+                self._cmd_matches, self._suggestion_index
+            )
+            cmd_text = self._cmd_matches[self._suggestion_index].split("  -  ")[0]
+            self.input_bar.value = cmd_text
+            return
+
+        if self._cmd_matches:
+            if event.key == "down":
+                self._suggestion_index = min(
+                    self._suggestion_index + 1, len(self._cmd_matches) - 1
+                )
+                self.cmd_suggestions.update_matches(
+                    self._cmd_matches, self._suggestion_index
+                )
+            elif event.key == "up":
+                self._suggestion_index = max(self._suggestion_index - 1, -1)
+                self.cmd_suggestions.update_matches(
+                    self._cmd_matches, self._suggestion_index
+                )
+            elif event.key == "enter" and self._suggestion_index >= 0:
+                event.prevent_default()
+                self._accept_suggestion()
+            elif event.key == "escape":
+                self._cmd_matches = []
+                self._suggestion_index = -1
+                self.cmd_suggestions.hide()
+            return
+
+        # Command history navigation when no suggestions shown
+        if self._cmd_history:
+            if event.key == "up":
+                if self._history_index < len(self._cmd_history) - 1:
+                    self._history_index += 1
+                    self.input_bar.value = self._cmd_history[
+                        -(self._history_index + 1)
+                    ]
+            elif event.key == "down":
+                if self._history_index > 0:
+                    self._history_index -= 1
+                    self.input_bar.value = self._cmd_history[
+                        -(self._history_index + 1)
+                    ]
+                elif self._history_index == 0:
+                    self._history_index = -1
+                    self.input_bar.value = ""
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
@@ -988,8 +1213,11 @@ class OttoUI(App):
         self._cmd_matches = []
         self._suggestion_index = -1
         self.cmd_suggestions.hide()
+        self._history_index = -1
         if not text:
             return
+        if text:
+            self._cmd_history.append(text)
         if text.lower() in _QUIT_CMDS:
             await self._shutdown_and_exit()
             return
@@ -1019,6 +1247,24 @@ class OttoUI(App):
             self.output.write_system(
                 f"[model set to {arg} for new sessions]"
             )
+            return
+        nm = _NAME_RE.match(text)
+        if nm:
+            id_prefix = nm.group(1).strip()
+            name = nm.group(2).strip()
+            try:
+                sess = self.mgr.switch(id_prefix)
+            except Exception as e:  # noqa: BLE001
+                self.output.write_error(str(e))
+                return
+            sess.name = name
+            self.output.write_system(f"[session {sess.id} named \"{name}\"]")
+            self._refresh_sidebar()
+            self._refresh_status()
+            return
+        em = _EXPORT_RE.match(text)
+        if em:
+            self._export_session((em.group(1) or "").strip())
             return
         m = _USER_RE.match(text)
         if not m:
@@ -1083,7 +1329,8 @@ class OttoUI(App):
                 return
             self._reset_for_new_active_session(
                 f"[resumed {sess.id} \u00b7 mode {sess.mode.value} \u00b7 "
-                f"{sess.message_count()} msgs]"
+                f"{sess.message_count()} msgs]",
+                replay_messages=sess.messages if sess.messages else None,
             )
             self._refresh_status()
             self._refresh_sidebar()
@@ -1107,7 +1354,8 @@ class OttoUI(App):
             return
         self._reset_for_new_active_session(
             f"[resumed {sess.id} \u00b7 mode {sess.mode.value} \u00b7 "
-            f"{sess.message_count()} msgs]"
+            f"{sess.message_count()} msgs]",
+            replay_messages=sess.messages if sess.messages else None,
         )
         self._refresh_status()
         self._refresh_sidebar()
@@ -1143,6 +1391,7 @@ class OttoUI(App):
             )
         self._refresh_status()
         self._refresh_sidebar()
+        self._refocus_input()
 
     def _on_model_picked(self, result: str | None) -> None:
         if result is not None:
@@ -1166,13 +1415,15 @@ class OttoUI(App):
         if sessions:
             self.output.write_system("\u2500\u2500 active \u2500\u2500")
             self.output.write_system(
-                f"{'id':<10} {'mode':<6} {'created':<10} {'#msgs':>5}  last active"
+                f"{'id':<10} {'mode':<6} {'name':<20} {'created':<10} {'#msgs':>5}  last active"
             )
             for s in sessions:
                 marker = " *" if s.id == active_id else "  "
+                name_display = f'"{s.name}"' if s.name else ""
                 self.output.write_system(
                     f"{s.id}{marker}  "
                     f"{s.mode.value:<6} "
+                    f"{name_display:<20} "
                     f"{_format_ts(s.created_at)}   "
                     f"{s.message_count():>5}  "
                     f"{_format_ts(s.last_activity)}"
@@ -1182,18 +1433,72 @@ class OttoUI(App):
                 "\u2500\u2500 resumable (on disk) \u2500\u2500"
             )
             self.output.write_system(
-                f"{'id':<10} {'mode':<6} {'created':<10} {'#conv':>5}  last active"
+                f"{'id':<10} {'mode':<6} {'name':<20} {'created':<10} {'#conv':>5}  last active"
             )
             for d in disk_only:
                 created = datetime.fromisoformat(d["created_at"])
                 last = datetime.fromisoformat(d["last_active"])
+                name_display = f'"{d["name"]}"' if d.get("name") else ""
                 self.output.write_system(
                     f"{d['id']}  "
                     f"{d['mode']:<6} "
+                    f"{name_display:<20} "
                     f"{_format_ts(created)}   "
                     f"{d['conversation_count']:>5}  "
                     f"{_format_ts(last)}"
                 )
+
+    # ------------------------------------------------------------------
+    # Export session transcript
+    # ------------------------------------------------------------------
+
+    def _export_session(self, path: str) -> None:
+        """Export the current session's messages to a Markdown file."""
+        import pathlib
+
+        active = self.mgr.active
+        if active is None:
+            self.output.write_error("no active session to export")
+            return
+
+        if not path:
+            safe_name = active.name.replace(" ", "_") if active.name else active.id
+            path = f"otto-export-{safe_name}.md"
+
+        out = pathlib.Path(path)
+        lines = [
+            "# Otto Session Export",
+            "",
+            f"- **Session ID**: {active.id}",
+            f"- **Mode**: {active.mode.value}",
+            f"- **Model**: {self.mgr.model}",
+            f"- **Created**: {active.created_at.isoformat()}",
+            f"- **Messages**: {active.message_count()}",
+            "",
+            "---",
+            "",
+        ]
+
+        for msg in active.messages:
+            ts_str = msg.ts.strftime("%Y-%m-%d %H:%M:%S")
+            if msg.role == "user":
+                lines.append(f"## You ({ts_str})")
+                lines.append("")
+                lines.append(msg.content)
+                lines.append("")
+            elif msg.role == "assistant":
+                lines.append(f"## Otto ({ts_str})")
+                lines.append("")
+                lines.append(msg.content)
+                lines.append("")
+            lines.append("---")
+            lines.append("")
+
+        try:
+            out.write_text("\n".join(lines), encoding="utf-8")
+            self.output.write_system(f"[exported session to {out}]")
+        except OSError as e:
+            self.output.write_error(f"failed to export: {e}")
 
     # ------------------------------------------------------------------
     # Message submission & turn draining
@@ -1234,12 +1539,15 @@ class OttoUI(App):
                             ev.tool_name, ev.tool_result_text
                         )
                     elif ev.kind == "usage":
+                        self._total_tokens_in += ev.tokens_in
+                        self._total_tokens_out += ev.tokens_out
                         self.output.write_usage(
                             ev.tokens_in,
                             ev.tokens_out,
                             ev.tokens_thoughts,
                             ev.tokens_total,
                         )
+                        self._refresh_status()
                     elif ev.kind == "confirmation_request":
                         await self._handle_confirmation(sess, ev)
                     elif ev.kind == "done":
@@ -1280,6 +1588,7 @@ class OttoUI(App):
                 logger.exception("Failed to update activity for %s", sess.id)
             self._refresh_status()
             self._refresh_sidebar()
+            self._refocus_input()
 
     # ------------------------------------------------------------------
     # Confirmation modal (ask_user flow)
@@ -1454,11 +1763,17 @@ class ChatTimeline(VerticalScroll):
         self._maybe_scroll_end()
 
     def write_thinking(self, text: str) -> None:
-        thunk = Static(
+        inner = Static(
             Text(f"  \u2039{text}\u203a", style="dim italic #d29922"),
             markup=False,
         )
-        self.mount(thunk)
+        wrapped = Collapsible(
+            inner,
+            title="  \U0001f4ad Thinking\u2026",
+            collapsed=True,
+            id=f"thinking-{id(inner)}",
+        )
+        self.mount(wrapped)
         self._maybe_scroll_end()
 
     def write_usage(
@@ -1502,6 +1817,22 @@ class ChatTimeline(VerticalScroll):
         if self._pending_tools:
             card = self._pending_tools.pop(0)
             card.set_result(result_text)
+
+    # ── history replay ──
+
+    def replay_history(self, messages: list) -> None:
+        """Render persisted messages into the timeline on resume."""
+        for msg in messages:
+            if msg.role == "user":
+                self.write_user(msg.content)
+            elif msg.role == "assistant":
+                # Render completed assistant messages as finalized cards
+                agent = AgentMessage()
+                agent.append_delta(msg.content)
+                agent.finalize()
+                self.mount(agent)
+            # Skip system messages from history (they're transient)
+        self._maybe_scroll_end()
 
     # ── clear ──
 

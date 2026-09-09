@@ -59,6 +59,50 @@ logger = logging.getLogger("otto.session")
 
 _PLANS_DIR = pathlib.Path(".otto") / "plans"
 _SESSIONS_DIR = pathlib.Path(".otto") / "sessions"
+_MESSAGES_VERSION = 1
+
+
+def save_messages(session_id: str, messages: list[Message]) -> None:
+    """Persist conversation messages to disk for later resume."""
+    save_dir = _SESSIONS_DIR / session_id
+    save_dir.mkdir(parents=True, exist_ok=True)
+    path = save_dir / "messages.json"
+    data = {
+        "version": _MESSAGES_VERSION,
+        "messages": [
+            {
+                "role": m.role,
+                "content": m.content,
+                "ts": m.ts.isoformat(),
+            }
+            for m in messages
+        ],
+    }
+    tmp = path.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(path)
+        logger.debug("Saved %d messages for session %s", len(messages), session_id)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.error("Failed to save messages for session %s: %s", session_id, e)
+
+
+def load_messages(session_id: str) -> list[Message]:
+    """Load persisted conversation messages from disk. Returns empty list on error."""
+    path = _SESSIONS_DIR / session_id / "messages.json"
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        messages = []
+        for m in raw.get("messages", []):
+            ts = datetime.fromisoformat(m["ts"]) if "ts" in m else datetime.now(timezone.utc)
+            messages.append(Message(role=m["role"], content=m["content"], ts=ts))
+        logger.debug("Loaded %d messages for session %s", len(messages), session_id)
+        return messages
+    except (json.JSONDecodeError, OSError, KeyError) as e:
+        logger.warning("Failed to load messages for session %s: %s", session_id, e)
+        return []
 
 
 class SessionMode(str, enum.Enum):
@@ -178,6 +222,8 @@ class Session:
         self._base_config = base_config
         # Reference to session index for persistence
         self._index_ref = index
+        # Optional user-assigned name
+        self._name: str = ""
 
     @property
     def agent(self) -> antigravity.Agent:
@@ -186,6 +232,17 @@ class Session:
     @property
     def mode(self) -> SessionMode:
         return self._mode
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @name.setter
+    def name(self, value: str) -> None:
+        self._name = value
+        # Persist name to index
+        if self._index_ref:
+            self._index_ref.update(self.id, name=value)
 
     def message_count(self) -> int:
         return len(self.messages)
@@ -337,6 +394,8 @@ class Session:
                 await self.event_queue.put(
                     StreamEvent(session_id=self.id, kind="done", text=full)
                 )
+                # Persist messages for resume
+                save_messages(self.id, self.messages)
             except asyncio.CancelledError:
                 logger.debug("Consumer loop cancelled for session %s", self.id)
                 return
@@ -606,6 +665,11 @@ class SessionManager:
             base_config=self._base_config,
             index=self._index,
         )
+        # Restore saved message history
+        sess.messages = load_messages(sid)
+        # Restore session name
+        if entry.name:
+            sess._name = entry.name
         self._sessions[sid] = sess
         self._order.append(sid)
         self._active_id = sid
@@ -632,6 +696,7 @@ class SessionManager:
                     "last_active": entry.last_active,
                     "mode": entry.mode,
                     "conversation_count": len(conv_ids),
+                    "name": entry.name,
                 })
         return result
 

@@ -29,6 +29,7 @@ class SessionEntry:
     last_active: str  # ISO-8601
     mode: str  # "plan" | "build"
     conversation_ids: list[str] = field(default_factory=list)
+    name: str = ""
 
     @staticmethod
     def now_iso() -> str:
@@ -41,6 +42,7 @@ class SessionEntry:
         last_active: datetime,
         mode: str,
         conversation_ids: list[str] | None = None,
+        name: str = "",
     ) -> SessionEntry:
         return SessionEntry(
             id=session_id,
@@ -48,6 +50,7 @@ class SessionEntry:
             last_active=last_active.isoformat(),
             mode=mode,
             conversation_ids=conversation_ids or [],
+            name=name,
         )
 
 
@@ -119,6 +122,7 @@ class SessionIndex:
         last_active: datetime | None = None,
         mode: str | None = None,
         add_conversation_id: str | None = None,
+        name: str | None = None,
     ) -> None:
         """Update fields on an existing entry and save."""
         self._ensure_loaded()
@@ -132,6 +136,8 @@ class SessionIndex:
             entry.mode = mode
         if add_conversation_id is not None and add_conversation_id not in entry.conversation_ids:
             entry.conversation_ids.append(add_conversation_id)
+        if name is not None:
+            entry.name = name
         self.save()
 
     def get(self, session_id: str) -> SessionEntry | None:

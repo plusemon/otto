@@ -27,8 +27,10 @@ Requires `KILO_API_KEY` env var (or it falls back to a dummy key). See `.env.exa
 | `/session new` | create a new session and make it active |
 | `/session list` | show all sessions |
 | `/session switch <id>` | switch to session by ID prefix |
+| `/session resume <id>` | resume a session from disk |
 | `/model` | show current model |
 | `/model <name>` | set model for new sessions |
+| `/name <id> <name>` | name a session for easier identification |
 | `/quit` / `:q` / `Ctrl-D` | exit |
 
 ## Critical import rule
@@ -104,13 +106,14 @@ The `google-antigravity` SDK spawns a Go binary (`localharness`) as a subprocess
 
 ## Testing
 
-5 test files cover the core modules:
+6 test files cover the core modules:
 
 | File | Coverage |
 |------|----------|
 | `tests/unit/test_tools.py` | All 9 custom tools (mocked subprocess) |
 | `tests/unit/test_settings.py` | Test/lint auto-detection, `.otto/config.json` overrides |
-| `tests/unit/test_session_index.py` | Index CRUD, persistence, corrupt-file handling |
+| `tests/unit/test_session_index.py` | Index CRUD, persistence, naming, corrupt-file handling |
+| `tests/unit/test_messages.py` | Message save/load round-trip, timestamp preservation |
 | `tests/unit/test_policy.py` | Build/Plan policy tables, `make_ask_handler` |
 | `tests/integration/test_cli_smoke.py` | CLI imports, app instantiation, slash commands |
 

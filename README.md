@@ -11,7 +11,7 @@ Terminal-native coding agent MVP. A Textual TUI that manages multiple isolated c
 - **Streaming UI**: Real-time token streaming with syntax-highlighted output
 - **Permission controls**: Request approval for tool calls (git, file edits, shell commands)
 - **Auto-detected tools**: Test and lint commands auto-detected from project files
-- **Session persistence**: Sessions survive app restarts via disk storage
+- **Session persistence**: Sessions survive app restarts with full message history and naming
 
 ## Installation
 
@@ -55,6 +55,7 @@ otto
 | `/plan` | Switch active session to read-only mode |
 | `/build` | Switch active session to read-write mode |
 | `/model` | Select a model for new sessions |
+| `/name <id> <name>` | Name a session for easier identification |
 | `/quit` | Exit otto |
 
 ### Key Bindings
