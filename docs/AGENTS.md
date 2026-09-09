@@ -33,7 +33,7 @@ Requires `KILO_API_KEY` env var (or it falls back to a dummy key). See `.env.exa
 
 ## Critical import rule
 
-**Always use `from google import antigravity`** — never `import antigravity` (that's a Python stdlib Easter egg). This applies everywhere: `provider.py`, `session.py`, any new files.
+**Always use `from google import antigravity`** — never `import antigravity` (that's a Python stdlib Easter egg). This applies everywhere: `agent_config.py`, `session.py`, any new files.
 
 ## SDK gotcha: no `api_key` kwarg
 
@@ -92,23 +92,42 @@ Auto-detection falls back to sensible defaults when no config file exists.
 
 ## Architecture
 
-- `provider.py` — builds `LocalOpenAIAgentConfig` from env vars
+- `agent_config.py` — builds `LocalOpenAIAgentConfig` from env vars
 - `session.py` — `SessionManager` owns sessions; each session runs an `Agent` via async context manager with a consumer task draining an input queue
 - `ui.py` — Textual `App` with output pane, input bar, command palette
 - `main.py` — entry point, wires `SessionManager` → `AgentCliApp`
-- `config.py` — auto-detects test/lint commands from project files; loads `.otto/config.json` overrides
-- `tools.py` — custom Python callables (test runner, linter, git operations) registered as SDK tools
+- `settings.py` — auto-detects test/lint commands from project files; loads `.otto/config.json` overrides
+- `tools/` — custom Python callables (test runner, linter, git operations) registered as SDK tools
 - `policy.py` — Build/Plan mode policy tables; `ask_user` handler bridging SDK to asyncio
 
 The `google-antigravity` SDK spawns a Go binary (`localharness`) as a subprocess and speaks protobuf-over-websocket. Python never makes HTTP calls directly.
 
 ## Testing
 
-No test suite yet. Smoke tests exist as `if __name__ == "__main__"` blocks in `provider.py` and `session.py`. Run them with `python -m otto.provider` or `python -m otto.session`.
+5 test files cover the core modules:
+
+| File | Coverage |
+|------|----------|
+| `tests/unit/test_tools.py` | All 9 custom tools (mocked subprocess) |
+| `tests/unit/test_settings.py` | Test/lint auto-detection, `.otto/config.json` overrides |
+| `tests/unit/test_session_index.py` | Index CRUD, persistence, corrupt-file handling |
+| `tests/unit/test_policy.py` | Build/Plan policy tables, `make_ask_handler` |
+| `tests/integration/test_cli_smoke.py` | CLI imports, app instantiation, slash commands |
+
+```bash
+pytest          # run all tests
+ruff check src tests  # linting
+```
+
+`if __name__ == "__main__"` smoke tests also exist in `agent_config.py` and `session.py` (require `KILO_API_KEY`).
 
 ## Linting / formatting / typecheck
 
-None configured. No `ruff`, `mypy`, `pytest`, `tox`, `Makefile`, or CI workflows exist.
+- **`ruff`**: Configured as dev dependency (`ruff>=0.6`), lints via `ruff check src tests`
+- **`pytest`**: Configured via `[tool.pytest.ini_options]` in `pyproject.toml`
+- **CI**: GitHub Actions workflow at `.github/workflows/ci.yml` runs tests and linting on Python 3.10–3.12
+- **`mypy`**: Not configured
+- **`tox`**, **`Makefile`**: Not configured
 
 ## Python version
 
